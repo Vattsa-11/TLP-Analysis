@@ -1,91 +1,85 @@
-<<<<<<< HEAD
-# TLP Result Analysis Tool
+# MVS Analysis (TLP Result Finder)
 
-A comprehensive FastAPI-based web application for analyzing Test Learning Progress (TLP) results from PDF files and generating detailed Excel reports.
+A FastAPI-based web application that analyzes SRM TLP result PDFs and generates structured Excel reports with charts. It supports teacher-wise analysis, Faculty Advisor aggregation, overall multi-subject reporting, and low-attendance extraction.
 
 ## Features
 
-- **Self Analysis**: Analyze test results for individual teachers
-- **Faculty Advisor (FA) Analysis**: Group and analyze results by test components (FT1, FT2, etc.)
-- **Overall Analysis**: Generate comprehensive reports for all subjects in a single Excel file
-- **PDF Processing**: Supports both native PDF text extraction and OCR fallback
-- **Excel Reports**: Automated generation with charts and formatted data
-- **Dark Mode**: Toggle between light and dark themes
-- **Responsive UI**: Clean, modern interface with tab-based navigation
+- **Self Analysis**: Teacher-wise extraction from one or more TLP PDFs.
+- **Faculty Advisor (FA) Analysis**: Consolidated report grouped by test components (FT1, FT2, etc.).
+- **Overall Analysis**: Single Excel workbook with one sheet per subject.
+- **Low Attendance Analysis**: Finds students below 75% attendance (OCR-based) and exports Excel.
+- **PDF + OCR Processing**: Native text extraction with OCR fallback for scanned PDFs.
+- **Excel Reports with Charts**: Auto-formatted tables and summary charts.
+- **Modern Web UI**: Tab-based workflow with light/dark mode.
 
 ## Tech Stack
 
 - **Backend**: FastAPI (Python)
 - **Frontend**: HTML, CSS, JavaScript
-- **PDF Processing**: PDFPlumber
+- **PDF Processing**: pdfplumber
+- **OCR**: OCR.Space API (optional for TLP PDFs; required for attendance PDFs)
 - **Excel Generation**: XlsxWriter
 - **Data Processing**: Pandas
 
-## Installation
+## Project Structure
+
+- [main.py](main.py) — FastAPI app and API endpoints
+- [extractor.py](extractor.py) — TLP PDF parsing and OCR fallback
+- [attendance_extractor.py](attendance_extractor.py) — Low-attendance OCR extraction
+- [static/index.html](static/index.html) — Web UI
+
+## Getting Started
 
 1. Clone the repository:
+
 ```bash
-git clone https://github.com/Sharveswar007/MVS-Analysis-.git
+git clone https://github.com/Vattsa-11/MVS-Analysis-.git
 cd MVS-Analysis-
 ```
 
 2. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file (optional, for OCR API):
+3. (Optional) Create a `.env` file for OCR fallback in TLP extraction:
+
 ```
 OCR_API_KEY=your_api_key_here
 ```
 
 4. Run the application:
+
 ```bash
 uvicorn main:app --reload
 ```
 
-5. Open your browser at: `http://localhost:8000`
+5. Open the UI in your browser:
 
-## Deployment on Render
-
-1. Push your code to GitHub
-2. Go to [Render Dashboard](https://dashboard.render.com/)
-3. Click "New +" → "Web Service"
-4. Connect your GitHub repository
-5. Configure:
-   - **Name**: tlp-analysis-tool
-   - **Environment**: Python 3
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-6. Add Environment Variable: `OCR_API_KEY` (if needed)
-7. Click "Create Web Service"
+```
+http://localhost:8000
+```
 
 ## Usage
 
-### Self Tab
-- Enter teacher name
-- Upload PDF file(s)
-- Generate individual teacher report
+- **Self**: Enter a teacher name, upload one or more TLP PDFs, and download the Excel report.
+- **FA**: Enter FA name, add multiple faculty + subject codes, upload PDFs, and download a grouped report by test component.
+- **Overall**: Upload all subject PDFs to generate a multi-sheet Excel workbook.
+- **Low Attendance**: Upload attendance PDF to get a list of students with < 75% attendance.
 
-### FA Tab
-- Enter Faculty Advisor name
-- Add multiple faculty members with their subject codes
-- Upload all relevant PDFs
-- Generate grouped analysis by test components
+## API Endpoints
 
-### Overall Tab
-- Upload all subject PDFs
-- Generate single Excel file with multiple sheets (one per subject)
+- `POST /analyze` — Teacher-wise TLP analysis
+- `POST /analyze_fa` — Faculty Advisor consolidated analysis
+- `POST /analyze_overall` — Overall multi-subject analysis
+- `POST /analyze_attendance` — Low attendance extraction
 
-## Team
+## Notes
 
-- **Magi Sharma J** - Full Stack Developer
-- **Srivattsa R** - Full Stack Developer
-- **Sharveswar M** - Full Stack Developer
+- OCR is used automatically when PDFs are scanned or text extraction is weak.
+- Attendance extraction relies on OCR and may require clean scans for best results.
 
 ## License
 
 MIT License
-=======
-# MVS-Analysis-
->>>>>>> bf847997231f436185c06d9516304b1ced907494

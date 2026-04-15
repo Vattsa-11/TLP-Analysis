@@ -49,7 +49,7 @@ load_dotenv(ENV_FILE)
 
 app = FastAPI()
 
-# Add CORS middleware
+# Configure max upload size (50 MB for development, 25 MB for Vercel limit)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -57,6 +57,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add middleware to handle large file uploads
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class MaxUploadSizeMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, max_upload_size: int):
+        super().__init__(app)
+        self.max_upload_size = max_upload_size
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method == 'POST':
+            if 'content-length' in request.headers:
+                content_length = int(request.headers['content-length'])
+                if content_length > self.max_upload_size:
+                    return HTTPException(status_code=413, detail="File too large")
+        return await call_next(request)
+
+# 25 MB limit (safe for Vercel)
+MAX_UPLOAD_SIZE = 25 * 1024 * 1024
+app.add_middleware(MaxUploadSizeMiddleware, max_upload_size=MAX_UPLOAD_SIZE)
 
 # Mount static files
 if not os.path.exists(STATIC_DIR):

@@ -880,7 +880,7 @@
                 <button class="tab-btn active" onclick="switchTab('self', event)">Self</button>
                 <button class="tab-btn" onclick="switchTab('fa', event)">FA</button>
                 <button class="tab-btn" onclick="switchTab('overall', event)">Overall</button>
-                <button class="tab-btn" onclick="switchTab('attendance', event)">Low Attendance</button>
+                <!-- <button class="tab-btn" onclick="switchTab('attendance', event)">Low Attendance</button> -->
             </div>
 
             <!-- Self Tab -->
@@ -950,7 +950,7 @@
             </div>
 
             <!-- Low Attendance Tab -->
-            <div id="attendance" class="tab-content">
+            <div id="attendance" class="tab-content" style="display: none;">
                 <form id="attendanceForm">
                     <div class="form-group">
                         <label for="facultyAdvisorName">Faculty Advisor Name</label>
@@ -1589,14 +1589,52 @@
                         status.classList.remove('success-msg');
                     }, 3000);
                 } else {
-                    const errorText = await response.text();
-                    console.error('Server error:', errorText);
-                    throw new Error(errorText || 'Attendance analysis failed');
+                    let payload = null;
+                    let rawText = '';
+                    try {
+                        payload = await response.json();
+                    } catch {
+                        try {
+                            rawText = await response.text();
+                        } catch {
+                            rawText = '';
+                        }
+                    }
+
+                    let message = 'Attendance analysis failed.';
+                    const detail = payload?.detail;
+
+                    if (response.status === 404) {
+                        const msg = typeof detail === 'object' ? detail.message : detail;
+                        const hint = typeof detail === 'object' ? detail.hint : '';
+                        message = msg || 'No students with low attendance were detected in this PDF.';
+                        if (hint) {
+                            message += `\nHint: ${hint}`;
+                        }
+                    } else if (response.status === 500) {
+                        const msg = typeof detail === 'object' ? detail.message : detail;
+                        const hint = typeof detail === 'object' ? detail.hint : '';
+                        message = msg || 'Server encountered an internal error while analyzing attendance.';
+                        if (hint) {
+                            message += `\nHint: ${hint}`;
+                        }
+                    } else if (typeof detail === 'string' && detail.trim()) {
+                        message = detail;
+                    } else if (rawText.trim()) {
+                        message = rawText;
+                    }
+
+                    console.error('Attendance API error:', { status: response.status, payload, rawText });
+                    throw new Error(message);
                 }
             } catch (err) {
                 console.error('Error details:', err);
                 status.classList.add('hidden');
-                error.textContent = err.name === 'TimeoutError' ? 'Request timeout - try with smaller file' : err.message;
+                if (err.name === 'TimeoutError') {
+                    error.textContent = 'Request timed out after 2 minutes. Try again, or upload a clearer/smaller attendance PDF.';
+                } else {
+                    error.textContent = err.message || 'Attendance analysis failed. Please try again.';
+                }
                 error.classList.remove('hidden');
             } finally {
                 submitBtn.disabled = false;

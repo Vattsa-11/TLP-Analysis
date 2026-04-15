@@ -24,3 +24,8 @@ new_endpoint.txt
 debug_*.py
 test_*.py
 verify_*.py
+_*.py
+.vercel/
+.pytest_cache/
+.DS_Store
+Thumbs.db

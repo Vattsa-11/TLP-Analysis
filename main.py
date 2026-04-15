@@ -64,6 +64,89 @@ if not os.path.exists(STATIC_DIR):
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# =====================================================================
+# Helper functions for deduplication and suffix generation
+# =====================================================================
+
+def to_roman(num):
+    """
+    Converts an integer to Roman numerals.
+    Example: 1→I, 2→II, 3→III, 4→IV, etc.
+    """
+    val = [
+        1000, 900, 500, 400,
+        100, 90, 50, 40,
+        10, 9, 5, 4,
+        1
+    ]
+    syms = [
+        "M", "CM", "D", "CD",
+        "C", "XC", "L", "XL",
+        "X", "IX", "V", "IV",
+        "I"
+    ]
+    roman_num = ''
+    i = 0
+    while num > 0:
+        for _ in range(num // val[i]):
+            roman_num += syms[i]
+            num -= val[i]
+        i += 1
+    return roman_num
+
+
+def add_dataset_suffixes(results):
+    """
+    Adds suffixes to duplicate dataset names using Roman numerals.
+
+    Algorithm:
+    1. Convert dataset names to Roman numerals (FT1→FT_I, FT2→FT_II, etc.)
+    2. Group results by converted dataset name
+    3. For groups with multiple entries, append _1, _2, _3, etc.
+    4. For single entries, use converted name without suffix
+
+    Example:
+        Input: [FT1, FT1, FT2, FT2] → Output: [FT_I_1, FT_I_2, FT_II_1, FT_II_2]
+    """
+    if not results:
+        return results
+
+    # Step 1: Convert dataset names and group by converted name
+    dataset_groups = {}
+    for idx, result in enumerate(results):
+        original_dataset = result.get('dataset', 'Unknown')
+
+        # Extract number from dataset (e.g., "FT1" → 1, "FT2" → 2, "FT_I" → 1, "Midterm" → None)
+        import re
+        match = re.search(r'(\d+)', original_dataset)
+        if match:
+            test_num = int(match.group(1))
+            roman = to_roman(test_num)
+            # Create converted name like "FT_I", "FT_II"
+            prefix = re.sub(r'\d+', '', original_dataset)  # Remove numbers: "FT1" → "FT"
+            converted_dataset = f"{prefix}_{roman}"
+        else:
+            # No number found, keep as-is
+            converted_dataset = original_dataset
+
+        if converted_dataset not in dataset_groups:
+            dataset_groups[converted_dataset] = []
+        dataset_groups[converted_dataset].append(idx)
+
+    # Step 2: Add suffixes for duplicates
+    for converted_name, indices in dataset_groups.items():
+        if len(indices) > 1:
+            # Multiple entries with same converted name, add suffixes
+            for suffix_num, original_idx in enumerate(indices, 1):
+                results[original_idx]['dataset'] = f"{converted_name}_{suffix_num}"
+        else:
+            # Single entry, use converted name without suffix
+            original_idx = indices[0]
+            results[original_idx]['dataset'] = converted_name
+
+    return results
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     index_path = os.path.join(STATIC_DIR, "index.html")
@@ -123,6 +206,9 @@ async def analyze(files: list[UploadFile] = File(...), teacher_name: str = Form(
 
         if not results:
             raise HTTPException(status_code=404, detail=f"No data found for {teacher_name} in any of the uploaded files.")
+
+        # Apply suffix generation for duplicate dataset names
+        results = add_dataset_suffixes(results)
 
         # 2. Excel Generation (Consolidated)
         output = io.BytesIO()
@@ -823,7 +909,7 @@ async def detect_subjects(file: UploadFile = File(...)):
 async def analyze_attendance(file: UploadFile = File(...), faculty_advisor: str = Form(...), section: str = Form(...), subjects_data: str = Form("")):
     """
     Low Attendance Analysis Endpoint
-    Extracts students with attendance < 75% and > 0% in any subject
+    Extracts students with attendance < 75% in any subject
     """
     logger.info(f"Received attendance analysis request for section: {section}")
     
@@ -853,7 +939,14 @@ async def analyze_attendance(file: UploadFile = File(...), faculty_advisor: str 
         students_data = extract_attendance_data(contents)
         
         if not students_data:
-            raise HTTPException(status_code=404, detail="No students with low attendance found or unable to parse PDF")
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": "No students with low attendance were found in this PDF.",
+                    "hint": "Verify that the uploaded file is a consolidated attendance status PDF and that attendance percentages are visible.",
+                    "file": file.filename,
+                }
+            )
         
         # Generate Excel report
         output = io.BytesIO()
@@ -944,11 +1037,19 @@ async def analyze_attendance(file: UploadFile = File(...), faculty_advisor: str 
         
         return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in attendance analysis: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Attendance analysis failed due to an internal server error.",
+                "hint": "Please retry once. If it still fails, share the file name and timestamp from console logs.",
+            }
+        )
 
 
 if __name__ == "__main__":

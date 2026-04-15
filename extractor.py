@@ -119,6 +119,51 @@ def _build_results_list(all_matches, course, subject_code, test_name, method, ra
     return results_list
 
 
+def _is_text_meaningful(text):
+    """Returns True if text has sufficient, non-garbled content."""
+    if text is None or len(text.strip()) < 50:
+        return False
+    good = sum(1 for c in text if c.isalnum() or c in ' \n.,:-/()')
+    return (good / len(text)) >= 0.55
+
+
+def _is_image_based_pdf(file_bytes):
+    """
+    Detects if a PDF is image-based (scanned document) vs native text PDF.
+
+    Returns True if the PDF appears to be image-based (minimal native text).
+    Returns False if the PDF has sufficient native text.
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            if not pdf.pages:
+                return False
+
+            # Extract text from first 2 pages
+            full_text = ""
+            for page in pdf.pages[:2]:
+                text = page.extract_text()
+                if text:
+                    full_text += text + "\n"
+
+            # Check if text is meaningful
+            if not _is_text_meaningful(full_text):
+                logger.info(f"[Image Detection] PDF appears image-based (extracted {len(full_text)} chars)")
+                return True
+
+            # If total extracted text is still very small, it's likely image-based
+            if len(full_text.strip()) < 100:
+                logger.info(f"[Image Detection] PDF appears image-based (only {len(full_text)} chars from 2 pages)")
+                return True
+
+            logger.info(f"[Image Detection] PDF has native text ({len(full_text)} chars)")
+            return False
+
+    except Exception as e:
+        logger.error(f"[Image Detection] Error checking PDF: {e}")
+        return False
+
+
 def _extract_with_pdfplumber(file_bytes, teacher_name_query):
     """
     Runs pdfplumber-based extraction only.
@@ -141,9 +186,9 @@ def _extract_with_pdfplumber(file_bytes, teacher_name_query):
                 tables = page.extract_tables()
                 all_tables.extend(tables)
 
-            if len(full_text.strip()) < 50:
-                logger.warning("[pdfplumber] Low text density – likely a scanned PDF.")
-                return []  # Caller will still run OCR
+            if not _is_text_meaningful(full_text):
+                logger.warning("[pdfplumber] Text is missing or garbled – likely scanned/bad-font PDF.")
+                return []
 
             # --- Metadata ---
             course = "Unknown Course"
@@ -203,8 +248,10 @@ def _extract_with_pdfplumber(file_bytes, teacher_name_query):
                 logger.warning(f"[pdfplumber] No data found for '{teacher_name_query}'.")
                 return []
 
-            return _build_results_list(all_matches, course, subject_code, test_name,
+            results_list = _build_results_list(all_matches, course, subject_code, test_name,
                                        "pdfplumber_native", full_text)
+            # Deduplicate before returning
+            return deduplicate_results(results_list)
 
     except Exception as e:
         logger.error(f"[pdfplumber] Extraction failed: {e}")
@@ -243,8 +290,149 @@ def _extract_with_ocr(file_bytes, teacher_name_query, api_key):
 
     subject_code = course.split("-")[0].strip() if "-" in course else course.split()[0].strip()
 
-    return _build_results_list(all_matches, course, subject_code, test_name,
+    results_list = _build_results_list(all_matches, course, subject_code, test_name,
                                "ocr_api", full_text)
+    # Deduplicate before returning
+    return deduplicate_results(results_list)
+
+
+def _extract_with_ocrmypdf(file_bytes, teacher_name_query):
+    """
+    Runs ocrmypdf-based extraction for image-based PDFs.
+    Uses Tesseract OCR engine for local processing.
+    Returns a results_list (may be empty).
+    """
+    logger.info(f"[ocrmypdf] Extracting for: {teacher_name_query}")
+
+    try:
+        import tempfile
+        import ocrmypdf
+
+        # Create temporary file for OCR processing
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_input:
+            tmp_input.write(file_bytes)
+            tmp_input_path = tmp_input.name
+
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_output:
+            tmp_output_path = tmp_output.name
+
+        try:
+            # Run OCR with Tesseract engine
+            logger.info(f"[ocrmypdf] Processing with Tesseract OCR...")
+            ocrmypdf.ocr(
+                tmp_input_path,
+                tmp_output_path,
+                language='eng',
+                deskew=True,
+                optimize=0,
+                progress_bar=False,
+                quiet=True
+            )
+
+            # Extract text from OCR'd PDF using pdfplumber
+            logger.info(f"[ocrmypdf] Extracting text from OCR'd PDF...")
+            full_text = ""
+            with pdfplumber.open(tmp_output_path) as pdf:
+                if not pdf.pages:
+                    logger.warning("[ocrmypdf] OCR resulted in empty PDF.")
+                    return []
+
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        full_text += text + "\n"
+
+            if not full_text or len(full_text.strip()) < 50:
+                logger.warning(f"[ocrmypdf] No text extracted after OCR (only {len(full_text)} chars).")
+                return []
+
+            logger.info(f"[ocrmypdf] Extracted {len(full_text)} characters from OCR'd PDF.")
+
+            # Parse extracted text
+            all_matches = parse_all_text_lines(full_text, teacher_name_query)
+
+            if not all_matches:
+                logger.warning(f"[ocrmypdf] No data found for '{teacher_name_query}'.")
+                return []
+
+            # Extract metadata from OCR text
+            course = "Unknown (ocrmypdf)"
+            test_name = "Unknown (ocrmypdf)"
+            course_match = re.search(r"Course\s*[:|-]\s*(.*)", full_text, re.IGNORECASE)
+            if course_match:
+                course = course_match.group(1).strip()
+            test_match = re.search(r"Test Name\s*[:|-]\s*(.*)", full_text, re.IGNORECASE)
+            if test_match:
+                test_name = test_match.group(1).strip()
+
+            subject_code = course.split("-")[0].strip() if "-" in course else course.split()[0].strip()
+
+            results_list = _build_results_list(all_matches, course, subject_code, test_name,
+                                       "ocrmypdf", full_text)
+            logger.info(f"[ocrmypdf] Found {len(results_list)} result(s).")
+
+            # Deduplicate before returning
+            return deduplicate_results(results_list)
+
+        finally:
+            # Clean up temporary files
+            import os
+            if os.path.exists(tmp_input_path):
+                try:
+                    os.remove(tmp_input_path)
+                except Exception as e:
+                    logger.debug(f"[ocrmypdf] Could not delete temp input: {e}")
+            if os.path.exists(tmp_output_path):
+                try:
+                    os.remove(tmp_output_path)
+                except Exception as e:
+                    logger.debug(f"[ocrmypdf] Could not delete temp output: {e}")
+
+    except ImportError:
+        logger.error("[ocrmypdf] ocrmypdf library not installed. Install via: pip install ocrmypdf")
+        return []
+    except Exception as e:
+        logger.error(f"[ocrmypdf] Extraction failed: {e}")
+        return []
+
+
+def deduplicate_results(results_list):
+    """
+    Removes duplicate entries based on identical metrics arrays.
+    Keeps only the first occurrence of each unique metric set.
+
+    Args:
+        results_list: List of result dicts, each containing a 'data' dict with 'metrics' array
+
+    Returns:
+        Deduplicated results list
+    """
+    if not results_list:
+        return results_list
+
+    seen_metrics = set()
+    deduplicated = []
+
+    for result in results_list:
+        try:
+            metrics = result.get('data', {}).get('metrics', [])
+            # Convert metrics to tuple for hashing (first 4 elements are key: strength, absent, fail, pass%)
+            # Include all metrics for full comparison
+            metrics_tuple = tuple(float(m) for m in metrics[:10]) if len(metrics) >= 4 else tuple()
+
+            if metrics_tuple and metrics_tuple not in seen_metrics:
+                seen_metrics.add(metrics_tuple)
+                deduplicated.append(result)
+            elif metrics_tuple:
+                logger.info(f"[Dedup] Skipping duplicate entry with metrics: {metrics_tuple}")
+        except (TypeError, ValueError) as e:
+            # If we can't hash the metrics, keep the entry to be safe
+            deduplicated.append(result)
+
+    if len(deduplicated) < len(results_list):
+        logger.info(f"[Dedup] Removed {len(results_list) - len(deduplicated)} duplicate entries.")
+
+    return deduplicated
 
 
 def cross_verify_results(plumber_results, ocr_results, teacher_name_query):
@@ -348,66 +536,102 @@ def cross_verify_results(plumber_results, ocr_results, teacher_name_query):
 def extract_pdf_data(file_bytes, teacher_name_query, ocr_api_key=None):
     """
     Extracts data from a PDF (bytes) for a specific teacher.
-    Always runs BOTH pdfplumber and OCR (when an API key is present),
-    cross-verifies the two result sets, then returns the most reliable data.
-    """
-    logger.info(f"Starting dual extraction for teacher: {teacher_name_query}")
 
-    # --- Step 1: pdfplumber ---
+    New strategy:
+    1. Try pdfplumber first (native text extraction)
+    2. Detect if PDF is image-based (minimal native text)
+    3. If image-based: use ocrmypdf + Tesseract
+    4. If native text: use OCR.space API for cross-verification
+    5. Cross-verify and return most reliable data
+    """
+    logger.info(f"Starting extraction for teacher: {teacher_name_query}")
+
+    # --- Step 1: pdfplumber (primary extraction) ---
     plumber_results = _extract_with_pdfplumber(file_bytes, teacher_name_query)
 
-    # --- Step 2: OCR ---
-    ocr_results = _extract_with_ocr(file_bytes, teacher_name_query, ocr_api_key)
+    # --- Step 2: Detect if PDF is image-based and choose OCR method ---
+    is_image_based = _is_image_based_pdf(file_bytes)
+    ocr_results = []
+
+    if is_image_based:
+        logger.info("[Extraction] PDF detected as image-based. Using ocrmypdf + Tesseract...")
+        ocr_results = _extract_with_ocrmypdf(file_bytes, teacher_name_query)
+    else:
+        logger.info("[Extraction] PDF detected as native text. Using OCR.space API...")
+        ocr_results = _extract_with_ocr(file_bytes, teacher_name_query, ocr_api_key)
 
     # --- Step 3: Cross-verify & return ---
-    return cross_verify_results(plumber_results, ocr_results, teacher_name_query)
+    verified_results = cross_verify_results(plumber_results, ocr_results, teacher_name_query)
+
+    # --- Step 4: Deduplicate final results ---
+    deduplicated_results = deduplicate_results(verified_results)
+    return deduplicated_results
 
 def fetch_ocr_text(file_bytes, api_key):
     """
-    Sends file to OCR.space API and returns extracted text.
+    Renders each PDF page to a PNG image and sends it to OCR.space one at a time.
+    Concatenates text from all pages and returns it.
     """
     if not api_key:
         logger.error("OCR API key not provided. Skipping OCR fallback.")
         return ""
-        
+
+    url = 'https://api.ocr.space/parse/image'
+    full_text = ""
+
     try:
-        logger.info("Sending request to OCR.space API...")
-        # OCR.space API endpoint
-        url = 'https://api.ocr.space/parse/image'
-        
-        # Prepare file
-        files = {'file': ('report.pdf', file_bytes, 'application/pdf')}
-        data = {
-            'apikey': api_key,
-            'isTable': True, # Try to preserve table structure
-            'OCREngine': 2, # Use engine 2 for better text/numbers
-            'scale': True
-        }
-        
-        response = requests.post(url, files=files, data=data, timeout=30)
-        
-        if response.status_code != 200:
-            logger.error(f"OCR API Error: {response.status_code} - {response.text}")
-            return ""
-            
-        result = response.json()
-        
-        if result.get('IsErroredOnProcessing'):
-            logger.error(f"OCR Processing Error: {result.get('ErrorMessage')}")
-            return ""
-            
-        # Concatenate text from all pages
-        full_text = ""
-        if result.get('ParsedResults'):
-            for page_res in result['ParsedResults']:
-                full_text += page_res.get('ParsedText', '') + "\n"
-                
-        logger.info(f"OCR Success. Extracted {len(full_text)} characters.")
-        return full_text
-        
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            total_pages = len(pdf.pages)
+            logger.info(f"Sending {total_pages} page(s) to OCR.space API...")
+
+            for page_num, page in enumerate(pdf.pages, start=1):
+                try:
+                    img = page.to_image(resolution=200)
+                    buf = io.BytesIO()
+                    img.original.save(buf, format='PNG')
+                    img_bytes = buf.getvalue()
+
+                    logger.info(f"[OCR] Sending page {page_num}/{total_pages} ({len(img_bytes)} bytes)...")
+
+                    response = requests.post(
+                        url,
+                        files={'file': ('page.png', img_bytes, 'image/png')},
+                        data={
+                            'apikey': api_key,
+                            'language': 'eng',
+                            'isTable': True,
+                            'OCREngine': 2,
+                            'scale': True,
+                        },
+                        timeout=60,
+                    )
+
+                    if response.status_code != 200:
+                        logger.error(f"[OCR] Page {page_num} API error: {response.status_code} - {response.text}")
+                        continue
+
+                    result = response.json()
+
+                    if result.get('IsErroredOnProcessing'):
+                        logger.error(f"[OCR] Page {page_num} processing error: {result.get('ErrorMessage')}")
+                        continue
+
+                    if result.get('ParsedResults'):
+                        for page_res in result['ParsedResults']:
+                            full_text += page_res.get('ParsedText', '') + "\n"
+
+                    logger.info(f"[OCR] Page {page_num} done. Running total: {len(full_text)} chars.")
+
+                except Exception as e:
+                    logger.error(f"[OCR] Page {page_num} failed: {e}")
+                    continue
+
     except Exception as e:
-        logger.error(f"OCR Request Failed: {e}")
+        logger.error(f"[OCR] Failed to open PDF for rendering: {e}")
         return ""
+
+    logger.info(f"OCR complete. Total extracted: {len(full_text)} characters.")
+    return full_text
 
 def extract_with_ocr_fallback(file_bytes, teacher_name_query, api_key):
     """

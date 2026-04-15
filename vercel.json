@@ -1,5 +1,4 @@
 {
-  "runtime": "python@3.9",
   "functions": {
     "api/index.py": {
       "memory": 3008,

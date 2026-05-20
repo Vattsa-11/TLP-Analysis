@@ -880,6 +880,8 @@
                 <button class="tab-btn active" onclick="switchTab('self', event)">Self</button>
                 <button class="tab-btn" onclick="switchTab('fa', event)">FA</button>
                 <button class="tab-btn" onclick="switchTab('overall', event)">Overall</button>
+                <button class="tab-btn" onclick="switchTab('multiCourse', event)">Multi Course</button>
+                <button class="tab-btn" onclick="switchTab('singleCourse', event)">Single Course</button>
                 <!-- <button class="tab-btn" onclick="switchTab('attendance', event)">Low Attendance</button> -->
             </div>
 
@@ -945,6 +947,36 @@
 
                     <button type="submit" id="overallSubmitBtn">
                         <span>Generate Overall Report</span>
+                    </button>
+                </form>
+            </div>
+
+            <!-- Multi Course Tab -->
+            <div id="multiCourse" class="tab-content">
+                <form id="multiCourseForm">
+                    <div class="form-group">
+                        <label for="multiCoursePdfFile">Upload PDF(s)</label>
+                        <input type="file" id="multiCoursePdfFile" name="files" accept=".pdf" multiple required>
+                        <small>Select all PDFs for multi-course analysis.</small>
+                    </div>
+
+                    <button type="submit" id="multiCourseSubmitBtn">
+                        <span>Generate Multi Course Report</span>
+                    </button>
+                </form>
+            </div>
+
+            <!-- Single Course Tab -->
+            <div id="singleCourse" class="tab-content">
+                <form id="singleCourseForm">
+                    <div class="form-group">
+                        <label for="singleCoursePdfFile">Upload PDF(s)</label>
+                        <input type="file" id="singleCoursePdfFile" name="files" accept=".pdf" multiple required>
+                        <small>Select all PDFs for single-course analysis.</small>
+                    </div>
+
+                    <button type="submit" id="singleCourseSubmitBtn">
+                        <span>Generate Single Course Report</span>
                     </button>
                 </form>
             </div>
@@ -1581,7 +1613,7 @@
                     a.click();
                     a.remove();
                     window.URL.revokeObjectURL(url);
-                    
+
                     status.innerHTML = '<p>Low attendance report generated successfully!</p>';
                     status.classList.add('success-msg');
                     setTimeout(() => {
@@ -1635,6 +1667,138 @@
                 } else {
                     error.textContent = err.message || 'Attendance analysis failed. Please try again.';
                 }
+                error.classList.remove('hidden');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.style.opacity = '1';
+                submitBtn.style.cursor = 'pointer';
+            }
+        });
+
+        // Multi Course Form Handler
+        document.getElementById('multiCourseForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const submitBtn = document.getElementById('multiCourseSubmitBtn');
+            submitBtn.disabled = true;
+            submitBtn.style.opacity = '0.6';
+            submitBtn.style.cursor = 'not-allowed';
+
+            const status = document.getElementById('status');
+            const error = document.getElementById('error');
+
+            status.classList.remove('hidden');
+            error.classList.add('hidden');
+            status.innerHTML = '<p>Processing multi-course analysis... This may take a few minutes.</p>';
+            status.classList.remove('success-msg');
+
+            const formData = new FormData();
+            const fileInput = document.getElementById('multiCoursePdfFile');
+            for (let i = 0; i < fileInput.files.length; i++) {
+                formData.append('files', fileInput.files[i]);
+            }
+
+            try {
+                const response = await fetch('/analyze_multi_course', {
+                    method: 'POST',
+                    body: formData,
+                    signal: AbortSignal.timeout(120000)
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    if (blob.size === 0) {
+                        throw new Error('Received empty file from server');
+                    }
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'Multi_Course_Analysis.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(url);
+
+                    status.innerHTML = '<p>Multi-course analysis complete! Report downloaded successfully.</p>';
+                    status.classList.add('success-msg');
+                    setTimeout(() => {
+                        status.classList.add('hidden');
+                        status.classList.remove('success-msg');
+                    }, 3000);
+                } else {
+                    const errorText = await response.text();
+                    console.error('Server error:', errorText);
+                    throw new Error(errorText || 'Upload failed');
+                }
+            } catch (err) {
+                console.error('Error details:', err);
+                status.classList.add('hidden');
+                error.textContent = err.name === 'TimeoutError' ? 'Request timeout - try with smaller files' : err.message;
+                error.classList.remove('hidden');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.style.opacity = '1';
+                submitBtn.style.cursor = 'pointer';
+            }
+        });
+
+        // Single Course Form Handler
+        document.getElementById('singleCourseForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const submitBtn = document.getElementById('singleCourseSubmitBtn');
+            submitBtn.disabled = true;
+            submitBtn.style.opacity = '0.6';
+            submitBtn.style.cursor = 'not-allowed';
+
+            const status = document.getElementById('status');
+            const error = document.getElementById('error');
+
+            status.classList.remove('hidden');
+            error.classList.add('hidden');
+            status.innerHTML = '<p>Processing single-course analysis... This may take a few minutes.</p>';
+            status.classList.remove('success-msg');
+
+            const formData = new FormData();
+            const fileInput = document.getElementById('singleCoursePdfFile');
+            for (let i = 0; i < fileInput.files.length; i++) {
+                formData.append('files', fileInput.files[i]);
+            }
+
+            try {
+                const response = await fetch('/analyze_single_course', {
+                    method: 'POST',
+                    body: formData,
+                    signal: AbortSignal.timeout(120000)
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    if (blob.size === 0) {
+                        throw new Error('Received empty file from server');
+                    }
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'Single_Course_Analysis.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(url);
+
+                    status.innerHTML = '<p>Single-course analysis complete! Report downloaded successfully.</p>';
+                    status.classList.add('success-msg');
+                    setTimeout(() => {
+                        status.classList.add('hidden');
+                        status.classList.remove('success-msg');
+                    }, 3000);
+                } else {
+                    const errorText = await response.text();
+                    console.error('Server error:', errorText);
+                    throw new Error(errorText || 'Upload failed');
+                }
+            } catch (err) {
+                console.error('Error details:', err);
+                status.classList.add('hidden');
+                error.textContent = err.name === 'TimeoutError' ? 'Request timeout - try with smaller files' : err.message;
                 error.classList.remove('hidden');
             } finally {
                 submitBtn.disabled = false;

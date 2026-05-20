@@ -810,6 +810,160 @@ def _overall_parse_ocr_lines(ocr_text):
     return matches
 
 
+def _extract_summary_table_from_pdf(file_bytes):
+    """
+    Extracts the summary table from page 2 of a TLP PDF.
+    Returns (summary_metrics, course, test_name) or (None, course, test_name)
+    
+    Table structure:
+    Row 1: ['', 'Total strength', '58', '', 'Range of marks', 'No.of students', '']
+    Row 2: [None, 'Total absentees', '0', None, '0-49', '9', None]
+    Row 3: [None, 'Total no. of failures', '9', None, '50-59', '7', None]
+    Row 4: [None, 'Pass MARK', '50%', None, '60-69', '9', None]
+    Row 5: [None, 'Pass percentage', '84.48', None, '70-79', '14', None]
+    Row 6: [None, '', None, None, '80-89', '10', None]
+    Row 7: [None, None, None, None, '90-100', '9', None]
+    """
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            if len(pdf.pages) < 2:
+                return None, "Unknown Course", "Unknown Test"
+            
+            # Get metadata from page 1
+            page1_text = pdf.pages[0].extract_text() or ""
+            course = "Unknown Course"
+            test_name = "Unknown Test"
+            
+            # Extract course info
+            cm = re.search(r'(\d+CSC\d+\w?)\(([^)]+)\)', page1_text)
+            if cm:
+                course = f"{cm.group(1)} - {cm.group(2)}"
+            
+            # Extract test name and simplify to component ID (e.g., "FJ-I" -> "FJ1")
+            tm = re.search(r'Test Name\s*:\s*([^\n]+)', page1_text)
+            if tm:
+                raw_test = tm.group(1).strip()
+                # Convert Roman numerals to Arabic: "FJ-I" -> "FJ1", "FT-II" -> "FT2", etc.
+                roman_map = [
+                    ('VIII', '8'), ('VII', '7'), ('IX', '9'), ('IV', '4'),
+                    ('VI', '6'), ('III', '3'), ('II', '2'), ('I', '1'),
+                    ('X', '10'), ('V', '5')
+                ]
+                test_name = raw_test  # fallback
+                for roman, arabic in roman_map:
+                    if f"-{roman}" in raw_test:
+                        prefix = raw_test.split(f"-{roman}")[0].strip()
+                        test_name = prefix + arabic
+                        break
+                    elif f" {roman} " in raw_test or raw_test.endswith(f" {roman}"):
+                        prefix = raw_test.split(f" {roman}")[0].strip()
+                        test_name = prefix + arabic
+                        break
+                else:
+                    # No Roman numerals found, just remove dashes and take first word
+                    test_name = raw_test.replace('-', '').split()[0]
+            
+            # Get summary table from page 2
+            page2 = pdf.pages[1]
+            tables = page2.extract_tables()
+            
+            # Look for the summary table (typically table 2 in this format)
+            for table in tables:
+                if len(table) >= 5:
+                    # Check if row 1 contains "Total strength"
+                    has_strength = False
+                    if len(table) > 1:
+                        row1_str = ' '.join(str(cell) if cell else '' for cell in table[1])
+                        has_strength = "Total strength" in row1_str
+                    
+                    if has_strength:
+                        # Found it! Parse the summary data
+                        strength = 0
+                        absent = 0
+                        fail = 0
+                        pass_pct = 0
+                        ranges = [0, 0, 0, 0, 0, 0]  # 0-49, 50-59, 60-69, 70-79, 80-89, 90-100
+                        
+                        # Parse left side (metrics)
+                        for row in table:
+                            if not row or len(row) < 3:
+                                continue
+                            
+                            label = str(row[1]) if len(row) > 1 else ""
+                            value = str(row[2]) if len(row) > 2 else ""
+                            
+                            if "Total strength" in label:
+                                try:
+                                    strength = int(float(value))
+                                except:
+                                    pass
+                            elif "Total absentees" in label or "Total absent" in label:
+                                try:
+                                    absent = int(float(value))
+                                except:
+                                    pass
+                            elif "Total no. of failures" in label or "Total" in label and "failure" in label:
+                                try:
+                                    fail = int(float(value))
+                                except:
+                                    pass
+                            elif "Pass percentage" in label:
+                                try:
+                                    pass_pct = float(value)
+                                except:
+                                    pass
+                        
+                        # Parse right side (ranges)
+                        for row in table:
+                            if not row or len(row) < 6:
+                                continue
+                            
+                            range_label = str(row[4]) if len(row) > 4 else ""
+                            range_count = str(row[5]) if len(row) > 5 else ""
+                            
+                            if "0-49" in range_label or "0-49" in str(range_label):
+                                try:
+                                    ranges[0] = int(float(range_count))
+                                except:
+                                    pass
+                            elif "50-59" in range_label:
+                                try:
+                                    ranges[1] = int(float(range_count))
+                                except:
+                                    pass
+                            elif "60-69" in range_label:
+                                try:
+                                    ranges[2] = int(float(range_count))
+                                except:
+                                    pass
+                            elif "70-79" in range_label:
+                                try:
+                                    ranges[3] = int(float(range_count))
+                                except:
+                                    pass
+                            elif "80-89" in range_label:
+                                try:
+                                    ranges[4] = int(float(range_count))
+                                except:
+                                    pass
+                            elif "90-100" in range_label:
+                                try:
+                                    ranges[5] = int(float(range_count))
+                                except:
+                                    pass
+                        
+                        if strength > 0:
+                            metrics = [strength, absent, fail, pass_pct] + ranges
+                            logger.info(f"[Summary Table] Extracted: strength={strength}, absent={absent}, fail={fail}, pass%={pass_pct}")
+                            return metrics, course, test_name
+            
+            return None, course, test_name
+            
+    except Exception as e:
+        logger.error(f"[Summary Table] Error extracting: {e}")
+        return None, "Unknown Course", "Unknown Test"
+
+
 def extract_overall_data(file_bytes, ocr_api_key=None):
     """
     Extracts ALL rows from a PDF and aggregates them into a single result.
@@ -820,16 +974,34 @@ def extract_overall_data(file_bytes, ocr_api_key=None):
     chooses whichever source is more complete / internally consistent,
     then falls back to merging both if they complement each other.
     """
-    logger.info("Starting dual overall extraction (all rows \u2192 aggregate).")
+    logger.info("Starting dual overall extraction (all rows -> aggregate).")
 
     # ------------------------------------------------------------------ #
-    # STEP 1 \u2013 pdfplumber
+    # STEP 0 - Try to extract from summary table (new format)
+    # ------------------------------------------------------------------ #
+    summary_metrics, course, test_name = _extract_summary_table_from_pdf(file_bytes)
+    if summary_metrics and len(summary_metrics) >= 4:
+        logger.info(f"[Summary Table] Successfully extracted. Using aggregated data.")
+        subject_code = course.split("-")[0].strip() if "-" in course else "Unknown"
+        return {
+            "course": course,
+            "subject_code": subject_code,
+            "dataset": test_name,
+            "data": {
+                "raw_row": "SUMMARY_TABLE",
+                "metrics": summary_metrics,
+                "faculty_name": ""
+            },
+            "method": "summary_table_extracted",
+            "raw_text": ""
+        }
+
+    # ------------------------------------------------------------------ #
+    # STEP 1 - pdfplumber
     # ------------------------------------------------------------------ #
     plumber_matches = []
     plumber_text    = ""
-    course          = "Unknown Course"
     subject_code    = "Unknown Code"
-    test_name       = "Unknown Test"
 
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:

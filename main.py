@@ -269,10 +269,10 @@ async def analyze(files: list[UploadFile] = File(...), teacher_name: str = Form(
         # Cols: S.No, Test Component, Total Students, 0-49, 50-59, 60-69, 70-79, 80-89, 90-100, Absentees, Pass, Fail, Pass%
         
         headers = [
-            "S.No", "Test Component", "Total No. of\nStudents", 
-            "Range of\nmarks 0-49", "Range of\nmarks 50-59", "Range of\nmarks 60-69", 
-            "Range of\nmarks 70-79", "Range of\nmarks 80-89", "Range of\nmarks 90-100", 
-            "No. of\nAbsentees", "No. of Pass", "No. of Failure", "Pass %"
+            "S.No", "Test Component", "Total Students", 
+            "0-49", "50-59", "60-69", 
+            "70-79", "80-89", "90-100", 
+            "Absents", "Pass", "Fail", "Pass %"
         ]
         
         start_row = 7
@@ -914,7 +914,269 @@ async def analyze_fa(files: list[UploadFile] = File(...), fa_name: str = Form(..
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/detect_subjects")
+@app.post("/analyze_single_course")
+async def analyze_single_course(files: list[UploadFile] = File(...)):
+    """
+    Single Course Analysis Endpoint
+    Extracts and analyzes data for a single course from uploaded PDFs
+    """
+    try:
+        results = []
+        files.sort(key=lambda f: f.filename)
+
+        from extractor import extract_overall_data
+        from collections import defaultdict
+
+        ocp_api_key = os.getenv("OCR_API_KEY")
+        logger.info(f"Single Course Analysis Request received. Files: {len(files)}")
+
+        for file in files:
+            if not file.filename.lower().endswith('.pdf'):
+                continue
+
+            contents = await file.read()
+            try:
+                extracted_data = extract_overall_data(contents, ocp_api_key)
+
+                if extracted_data:
+                    extracted_data['filename'] = file.filename
+                    results.append(extracted_data)
+                else:
+                    logger.warning(f"No data extracted from {file.filename}")
+            except Exception as e:
+                logger.error(f"Error processing {file.filename}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+        if not results:
+            raise HTTPException(status_code=404, detail="No valid data found in uploaded files.")
+
+        # Group by course
+        course_groups = defaultdict(list)
+        for res in results:
+            course_code = res.get('subject_code', 'Unknown')
+            course_groups[course_code].append(res)
+
+        # Generate Excel for single course (use first course found)
+        output = io.BytesIO()
+        workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+
+        title_format = workbook.add_format({'bold': True, 'align': 'center', 'font_size': 14})
+        subtitle_format = workbook.add_format({'bold': True, 'align': 'center', 'font_size': 12})
+        header_format = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'text_wrap': True})
+        data_format = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
+        percent_format = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0.00'})
+
+        first_course_code = list(course_groups.keys())[0]
+        course_results = course_groups[first_course_code]
+        first_meta = course_results[0]
+
+        worksheet = workbook.add_worksheet("Single Course Analysis")
+
+        # Headers
+        worksheet.merge_range('A1:M1', 'SRM Institute of Science and Technology, Kattankulathur', title_format)
+        worksheet.merge_range('A2:M2', 'School of Computing', subtitle_format)
+        worksheet.merge_range('A3:M3', 'Department of Computing Technologies', subtitle_format)
+        worksheet.merge_range('A4:M4', '(ACADEMIC YEAR AY 2024-25)-Odd', subtitle_format)
+
+        course_name = first_meta.get('course', 'Unknown')
+        worksheet.merge_range('A5:M5', f'Course Code: {first_course_code} - {course_name}', subtitle_format)
+
+        # Table headers
+        headers = [
+            "S.No", "Test Component", "Total No. of\nStudents",
+            "Range of\nmarks 0-49", "Range of\nmarks 50-59", "Range of\nmarks 60-69",
+            "Range of\nmarks 70-79", "Range of\nmarks 80-89", "Range of\nmarks 90-100",
+            "No. of\nAbsentees", "No. of Pass", "No. of Failure", "Pass %"
+        ]
+
+        start_row = 6
+        worksheet.write_row(start_row, 0, headers, header_format)
+        worksheet.set_row(start_row, 40)
+
+        current_row = start_row + 1
+
+        for idx, res in enumerate(course_results):
+            m = res['data']['metrics']
+            strength = int(float(m[0]))
+            absent = int(float(m[1]))
+            fail = int(float(m[2]))
+            pass_pct = float(m[3])
+            ranges = [int(float(x)) for x in m[4:]]
+            passed = strength - absent - fail
+
+            row_data = [
+                idx + 1,
+                res.get('dataset', 'Unknown'),
+                strength,
+                ranges[0], ranges[1], ranges[2], ranges[3], ranges[4], ranges[5],
+                absent,
+                passed,
+                fail,
+                pass_pct
+            ]
+
+            worksheet.write_row(current_row, 0, row_data, data_format)
+            current_row += 1
+
+        worksheet.set_column('A:A', 5)
+        worksheet.set_column('B:B', 15)
+        worksheet.set_column('C:M', 12)
+
+        workbook.close()
+        output.seek(0)
+
+        headers = {
+            'Content-Disposition': 'attachment; filename="Single_Course_Analysis.xlsx"'
+        }
+
+        return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in single course analysis: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze_multi_course")
+async def analyze_multi_course(files: list[UploadFile] = File(...)):
+    """
+    Multi Course Analysis Endpoint
+    Extracts and aggregates data across multiple courses from uploaded PDFs
+    """
+    try:
+        results = []
+        files.sort(key=lambda f: f.filename)
+
+        from extractor import extract_overall_data
+        from collections import defaultdict
+
+        ocp_api_key = os.getenv("OCR_API_KEY")
+        logger.info(f"Multi Course Analysis Request received. Files: {len(files)}")
+
+        for file in files:
+            if not file.filename.lower().endswith('.pdf'):
+                continue
+
+            contents = await file.read()
+            try:
+                extracted_data = extract_overall_data(contents, ocp_api_key)
+
+                if extracted_data:
+                    extracted_data['filename'] = file.filename
+                    results.append(extracted_data)
+                else:
+                    logger.warning(f"No data extracted from {file.filename}")
+            except Exception as e:
+                logger.error(f"Error processing {file.filename}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+        if not results:
+            raise HTTPException(status_code=404, detail="No valid data found in uploaded files.")
+
+        # Group by course and test component
+        course_component_groups = defaultdict(lambda: defaultdict(list))
+        for res in results:
+            course_code = res.get('subject_code', 'Unknown')
+            dataset = res.get('dataset', 'Unknown')
+            course_component_groups[course_code][dataset].append(res)
+
+        # Generate Excel with multiple sheets (one per course)
+        output = io.BytesIO()
+        workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+
+        title_format = workbook.add_format({'bold': True, 'align': 'center', 'font_size': 14})
+        subtitle_format = workbook.add_format({'bold': True, 'align': 'center', 'font_size': 12})
+        header_format = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'text_wrap': True})
+        data_format = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
+        percent_format = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0.00'})
+
+        used_sheet_names = set()
+
+        for course_code in sorted(course_component_groups.keys()):
+            component_groups = course_component_groups[course_code]
+            first_meta = list(component_groups.values())[0][0]
+            course_name = first_meta.get('course', 'Unknown')
+
+            # Sheet name
+            sheet_name = f"{course_code[:20]}".replace('/', '_').replace('\\', '_')[:31]
+            if sheet_name.upper() in used_sheet_names:
+                counter = 1
+                base = sheet_name[:25]
+                sheet_name = f"{base}_{counter}"[:31]
+            used_sheet_names.add(sheet_name.upper())
+
+            worksheet = workbook.add_worksheet(sheet_name)
+
+            # Headers
+            worksheet.merge_range('A1:M1', 'SRM Institute of Science and Technology, Kattankulathur', title_format)
+            worksheet.merge_range('A2:M2', 'School of Computing', subtitle_format)
+            worksheet.merge_range('A3:M3', 'Department of Computing Technologies', subtitle_format)
+            worksheet.merge_range('A4:M4', '(ACADEMIC YEAR AY 2024-25)-Odd', subtitle_format)
+            worksheet.merge_range('A5:M5', f'Course Code: {course_code} - {course_name}', subtitle_format)
+
+            # Table headers
+            headers = [
+                "S.No", "Test Component", "Total No. of\nStudents",
+                "Range of\nmarks 0-49", "Range of\nmarks 50-59", "Range of\nmarks 60-69",
+                "Range of\nmarks 70-79", "Range of\nmarks 80-89", "Range of\nmarks 90-100",
+                "No. of\nAbsentees", "No. of Pass", "No. of Failure", "Pass %"
+            ]
+
+            start_row = 6
+            worksheet.write_row(start_row, 0, headers, header_format)
+            worksheet.set_row(start_row, 40)
+
+            current_row = start_row + 1
+
+            for component_idx, (component_name, component_results) in enumerate(sorted(component_groups.items())):
+                for res in component_results:
+                    m = res['data']['metrics']
+                    strength = int(float(m[0]))
+                    absent = int(float(m[1]))
+                    fail = int(float(m[2]))
+                    pass_pct = float(m[3])
+                    ranges = [int(float(x)) for x in m[4:]]
+                    passed = strength - absent - fail
+
+                    row_data = [
+                        component_idx + 1,
+                        component_name,
+                        strength,
+                        ranges[0], ranges[1], ranges[2], ranges[3], ranges[4], ranges[5],
+                        absent,
+                        passed,
+                        fail,
+                        pass_pct
+                    ]
+
+                    worksheet.write_row(current_row, 0, row_data, data_format)
+                    current_row += 1
+
+            worksheet.set_column('A:A', 5)
+            worksheet.set_column('B:B', 15)
+            worksheet.set_column('C:M', 12)
+
+        workbook.close()
+        output.seek(0)
+
+        headers = {
+            'Content-Disposition': 'attachment; filename="Multi_Course_Analysis.xlsx"'
+        }
+
+        return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in multi course analysis: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 async def detect_subjects(file: UploadFile = File(...)):
     """
     Detect subject codes from an attendance PDF.
